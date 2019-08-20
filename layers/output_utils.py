@@ -47,6 +47,11 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
         if dets['score'].size(0) == 0:
             return [torch.Tensor()] * 4
 
+    keep = dets['class'] == 0 # person
+    for k in dets:
+        if k != 'proto':
+            dets[k] = dets[k][keep]
+
     # im_w and im_h when it concerns bboxes. This is a workaround hack for preserve_aspect_ratio
     b_w, b_h = (w, h)
 
