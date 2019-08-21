@@ -107,6 +107,8 @@ def parse_args(argv=None):
                         help='If specified, override the dataset specified in the config with this one (example: coco2017_dataset).')
     parser.add_argument('--detect', default=False, dest='detect', action='store_true',
                         help='Don\'t evauluate the mask branch at all and only do object detection. This only works for --display and --benchmark.')
+    parser.add_argument('--mask_bg_path', default=None, dest='mask_bg_path', type=str,
+                        help='An Masked background images')
 
     parser.set_defaults(no_bar=False, display=False, resume=False, output_coco_json=False, output_web_json=False, shuffle=False,
                         benchmark=False, no_sort=False, no_hash=False, mask_proto_debug=False, crop=True, detect=False)
@@ -136,6 +138,17 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         img_gpu = img / 255.0
         h, w, _ = img.shape
     
+    if args.mask_bg_path is not None:
+        max_size = max(w, h)
+        min_size = int(max_size * (9./16.))
+        frame = cv2.resize(cv2.imread(args.mask_bg_path), (max_size, min_size))
+        head = np.full([int((h - min_size)/2), max_size, 3], fill_value=0, dtype='uint8')
+        tail = np.full([int((h - min_size)/2), max_size, 3], fill_value=0, dtype='uint8')
+        frame = np.concatenate((head, frame, tail), axis=0)
+        bg_img_gpu = torch.from_numpy(
+            frame / 255.0
+            ).cuda().float()
+
     with timer.env('Postprocess'):
         t = postprocess(dets_out, w, h, visualize_lincomb = args.display_lincomb,
                                         crop_masks        = args.crop,
@@ -193,16 +206,23 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         # I did the math for this on pen and paper. This whole block should be equivalent to:
         #    for j in range(num_dets_to_consider):
         #        img_gpu = img_gpu * inv_alph_masks[j] + masks_color[j]
-#        masks_color_summand = masks_color[0]
-        masks_color_summand = masks[0]
-#        if num_dets_to_consider > 1:
-#            inv_alph_cumul = inv_alph_masks[:(num_dets_to_consider-1)].cumprod(dim=0)
-#            masks_color_cumul = masks_color[1:] * inv_alph_cumul
-#            masks_color_summand += masks_color_cumul.sum(dim=0)
+        if args.mask_bg_path is None:
+            masks_color_summand = masks_color[0]
+            if num_dets_to_consider > 1:
+                inv_alph_cumul = inv_alph_masks[:(num_dets_to_consider-1)].cumprod(dim=0)
+                masks_color_cumul = masks_color[1:] * inv_alph_cumul
+                masks_color_summand += masks_color_cumul.sum(dim=0)
+            img_gpu = img_gpu * inv_alph_masks.prod(dim=0) + masks_color_summand
+        else:
+            masks_color_summand = masks[0]
+            if num_dets_to_consider > 1:
+                masks_color_cumul = masks[1:]
+                masks_color_summand += masks_color_cumul.sum(dim=0)
 
-#        img_gpu = img_gpu * inv_alph_masks.prod(dim=0) + masks_color_summand
-        img_gpu = img_gpu * masks_color_summand
-        
+            img_gpu = img_gpu * masks_color_summand
+            # Composition with background
+            img_gpu = img_gpu + bg_img_gpu * (1 - masks[0])
+
     # Then draw the stuff that needs to be done on the cpu
     # Note, make sure this is a uint8 tensor or opencv will not anti alias text for whatever reason
     img_numpy = (img_gpu * 255).byte().cpu().numpy()
@@ -564,7 +584,7 @@ def evalimage(net:Yolact, path:str, save_path:str=None):
     batch = FastBaseTransform()(frame.unsqueeze(0))
     preds = net(batch)
 
-    img_numpy = prep_display(preds, frame, None, None, undo_transform=False)
+    img_numpy = prep_display(preds, frame, None, None, undo_transform=False, mask_alpha=0.45)
     
     if save_path is None:
         img_numpy = img_numpy[:, :, (2, 1, 0)]
