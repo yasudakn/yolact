@@ -99,6 +99,8 @@ def parse_args(argv=None):
                         help='An input folder of images and output folder to save detected images. Should be in the format input->output.')
     parser.add_argument('--video', default=None, type=str,
                         help='A path to a video to evaluate on. Passing in a number will use that index webcam.')
+    parser.add_argument('--video_res', default=[1280, 720], type=int, nargs='+', 
+                        help='A video capturing resolution of webcam.')
     parser.add_argument('--video_multiframe', default=1, type=int,
                         help='The number of frames to evaluate in parallel to make videos play at higher fps.')
     parser.add_argument('--score_threshold', default=0, type=float,
@@ -139,12 +141,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         h, w, _ = img.shape
     
     if args.mask_bg_path is not None:
-        max_size = max(w, h)
-        min_size = int(max_size * (9./16.))
-        frame = cv2.resize(cv2.imread(args.mask_bg_path), (max_size, min_size))
-        head = np.full([int((h - min_size)/2), max_size, 3], fill_value=0, dtype='uint8')
-        tail = np.full([int((h - min_size)/2), max_size, 3], fill_value=0, dtype='uint8')
-        frame = np.concatenate((head, frame, tail), axis=0)
+        frame = cv2.resize(cv2.imread(args.mask_bg_path), (w, h))
         bg_img_gpu = torch.from_numpy(
             frame / 255.0
             ).cuda().float()
@@ -633,6 +630,13 @@ def evalvideo(net:Yolact, path:str):
         print('Could not open video "%s"' % path)
         exit(-1)
     
+    vid.set(cv2.CAP_PROP_FRAME_HEIGHT, args.video_res[1])
+    vid.set(cv2.CAP_PROP_FRAME_WIDTH, args.video_res[0])
+    vid.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('H', '2', '6', '4'))
+    W = vid.get(cv2.CAP_PROP_FRAME_WIDTH)
+    H = vid.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    print('capture video size: w{} h{}'.format(W, H))
+
     net = CustomDataParallel(net).cuda()
     transform = torch.nn.DataParallel(FastBaseTransform()).cuda()
     frame_times = MovingAverage(100)
