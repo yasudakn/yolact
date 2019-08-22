@@ -46,8 +46,8 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
         
         if dets['score'].size(0) == 0:
             return [torch.Tensor()] * 4
-
-    keep = dets['class'] == 0 # person
+    
+    keep = dets['class'] == 0 # person class
     for k in dets:
         if k != 'proto':
             dets[k] = dets[k][keep]
@@ -94,6 +94,8 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
 
         # Crop masks before upsampling because you know why
         if crop_masks:
+            if boxes.size()[0] == 0:
+                return [torch.Tensor()] * 4
             masks = crop(masks, boxes)
 
         # Permute into the correct output shape [num_dets, proto_h, proto_w]
