@@ -28,6 +28,7 @@ from PIL import Image
 
 import matplotlib.pyplot as plt
 import cv2
+import pdf2image
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -111,6 +112,8 @@ def parse_args(argv=None):
                         help='Don\'t evauluate the mask branch at all and only do object detection. This only works for --display and --benchmark.')
     parser.add_argument('--mask_bg_path', default=None, dest='mask_bg_path', type=str,
                         help='An Masked background images')
+    parser.add_argument('--poppler_path', default=os.path.join("C:/workspace/poppler-0.67.0", "bin"), dest='poppler_path', type=str,
+                        help='An Poppler PATH')
 
     parser.set_defaults(no_bar=False, display=False, resume=False, output_coco_json=False, output_web_json=False, shuffle=False,
                         benchmark=False, no_sort=False, no_hash=False, mask_proto_debug=False, crop=True, detect=False)
@@ -129,7 +132,7 @@ coco_cats = {} # Call prep_coco_cats to fill this
 coco_cats_inv = {}
 color_cache = defaultdict(lambda: {})
 
-def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45):
+def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, bg_imgs=None, slide_num=0):
     """
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
     """
@@ -140,12 +143,6 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         img_gpu = img / 255.0
         h, w, _ = img.shape
     
-    if args.mask_bg_path is not None:
-        frame = cv2.resize(cv2.imread(args.mask_bg_path), (w, h))
-        bg_img_gpu = torch.from_numpy(
-            frame / 255.0
-            ).cuda().float()
-
     with timer.env('Postprocess'):
         t = postprocess(dets_out, w, h, visualize_lincomb = args.display_lincomb,
                                         crop_masks        = args.crop,
@@ -218,7 +215,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
 
             img_gpu = img_gpu * masks_color_summand
             # Composition with background
-            img_gpu = img_gpu + bg_img_gpu * (1 - masks[0])
+            img_gpu = img_gpu + bg_imgs[slide_num] * (1 - masks[0])
 
     # Then draw the stuff that needs to be done on the cpu
     # Note, make sure this is a uint8 tensor or opencv will not anti alias text for whatever reason
@@ -645,6 +642,27 @@ def evalvideo(net:Yolact, path:str):
     frame_time_target = 1 / vid.get(cv2.CAP_PROP_FPS)
     running = True
 
+    if args.mask_bg_path is not None:
+        bg_imgs = []
+        if Path(args.mask_bg_path).suffix == '.pdf':
+            pdfimages = pdf2image.convert_from_path(args.mask_bg_path)
+            for pdfimage in pdfimages:
+                cvimage = np.asarray(pdfimage)
+                cvimage = cv2.cvtColor(cvimage, cv2.COLOR_RGB2BGR)
+                bg_img = cv2.resize(cvimage, (int(W), int(H)))
+                bg_img_gpu = torch.from_numpy(
+                    bg_img / 255.0
+                    ).cuda().float()
+                bg_imgs.append(bg_img_gpu)
+                slide_num =0
+        else:
+            bg_img = cv2.resize(cv2.imread(args.mask_bg_path), (int(W), int(H)))
+            bg_img_gpu = torch.from_numpy(
+                bg_img / 255.0
+                ).cuda().float()
+            bg_imgs.append(bg_img_gpu)
+            
+
     def cleanup_and_exit():
         print()
         pool.terminate()
@@ -666,16 +684,17 @@ def evalvideo(net:Yolact, path:str):
             return frames, net(imgs)
 
     def prep_frame(inp):
+        nonlocal slide_num
         with torch.no_grad():
             frame, preds = inp
-            return prep_display(preds, frame, None, None, undo_transform=False, class_color=True)
+            return prep_display(preds, frame, None, None, undo_transform=False, class_color=True, bg_imgs=bg_imgs, slide_num=slide_num)
 
     frame_buffer = Queue()
     video_fps = 0
 
     # All this timing code to make sure that 
     def play_video():
-        nonlocal frame_buffer, running, video_fps, is_webcam
+        nonlocal frame_buffer, running, video_fps, is_webcam, slide_num
 
         video_frame_times = MovingAverage(100)
         frame_time_stabilizer = frame_time_target
@@ -695,6 +714,12 @@ def evalvideo(net:Yolact, path:str):
 
             if cv2.waitKey(1) == 27: # Press Escape to close
                 running = False
+            elif cv2.waitKey(1) == ord('n'):
+                if slide_num < len(bg_imgs) - 1:
+                    slide_num = slide_num + 1
+            elif cv2.waitKey(1) == ord('b'):
+                if 0 < slide_num:
+                    slide_num = slide_num - 1
 
             buffer_size = frame_buffer.qsize()
             if buffer_size < args.video_multiframe:
@@ -988,6 +1013,8 @@ def print_maps(all_maps):
 
 if __name__ == '__main__':
     parse_args()
+
+    os.environ["PATH"] += os.pathsep + args.poppler_path
 
     if args.config is not None:
         set_cfg(args.config)
