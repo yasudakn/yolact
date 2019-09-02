@@ -114,6 +114,7 @@ def parse_args(argv=None):
                         help='An Masked background images')
     parser.add_argument('--poppler_path', default=os.path.join("C:/workspace/poppler-0.67.0", "bin"), dest='poppler_path', type=str,
                         help='An Poppler PATH')
+    parser.add_argument('--mask_alpha', default=0.75, dest='mask_alpha', type=float, help='Mask alpha value')
 
     parser.set_defaults(no_bar=False, display=False, resume=False, output_coco_json=False, output_web_json=False, shuffle=False,
                         benchmark=False, no_sort=False, no_hash=False, mask_proto_debug=False, crop=True, detect=False)
@@ -213,9 +214,9 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                 masks_color_cumul = masks[1:]
                 masks_color_summand += masks_color_cumul.sum(dim=0)
 
-            img_gpu = img_gpu * masks_color_summand
+            img_gpu = img_gpu * masks_color_summand * mask_alpha + bg_imgs[slide_num] * masks_color_summand * (1-mask_alpha)
             # Composition with background
-            img_gpu = img_gpu + bg_imgs[slide_num] * (1 - masks[0])
+            img_gpu = img_gpu + bg_imgs[slide_num] * (1 - masks_color_summand)
 
     # Then draw the stuff that needs to be done on the cpu
     # Note, make sure this is a uint8 tensor or opencv will not anti alias text for whatever reason
@@ -641,9 +642,11 @@ def evalvideo(net:Yolact, path:str):
     # The 0.8 is to account for the overhead of time.sleep
     frame_time_target = 1 / vid.get(cv2.CAP_PROP_FPS)
     running = True
+    slide_num =0
+    bg_imgs = []
+    mask_alpha = args.mask_alpha
 
     if args.mask_bg_path is not None:
-        bg_imgs = []
         if Path(args.mask_bg_path).suffix == '.pdf':
             pdfimages = pdf2image.convert_from_path(args.mask_bg_path)
             for pdfimage in pdfimages:
@@ -654,7 +657,6 @@ def evalvideo(net:Yolact, path:str):
                     bg_img / 255.0
                     ).cuda().float()
                 bg_imgs.append(bg_img_gpu)
-                slide_num =0
         else:
             bg_img = cv2.resize(cv2.imread(args.mask_bg_path), (int(W), int(H)))
             bg_img_gpu = torch.from_numpy(
@@ -684,10 +686,11 @@ def evalvideo(net:Yolact, path:str):
             return frames, net(imgs)
 
     def prep_frame(inp):
-        nonlocal slide_num
+        nonlocal slide_num, bg_imgs, mask_alpha
         with torch.no_grad():
             frame, preds = inp
-            return prep_display(preds, frame, None, None, undo_transform=False, class_color=True, bg_imgs=bg_imgs, slide_num=slide_num)
+            return prep_display(preds, frame, None, None, undo_transform=False, class_color=True, 
+                                mask_alpha=mask_alpha, bg_imgs=bg_imgs, slide_num=slide_num)
 
     frame_buffer = Queue()
     video_fps = 0
@@ -712,12 +715,13 @@ def evalvideo(net:Yolact, path:str):
                 cv2.imshow(path, frame_buffer.get())
                 last_time = next_time
 
-            if cv2.waitKey(1) == 27: # Press Escape to close
+            key_press = cv2.waitKey(1) & 0xff
+            if key_press == 27: # Press Escape to close
                 running = False
-            elif cv2.waitKey(1) == ord('n'):
+            elif key_press == ord('n'):
                 if slide_num < len(bg_imgs) - 1:
                     slide_num = slide_num + 1
-            elif cv2.waitKey(1) == ord('b'):
+            elif key_press == ord('b'):
                 if 0 < slide_num:
                     slide_num = slide_num - 1
 
