@@ -115,6 +115,7 @@ def parse_args(argv=None):
     parser.add_argument('--poppler_path', default=os.path.join("C:/workspace/poppler-0.67.0", "bin"), dest='poppler_path', type=str,
                         help='An Poppler PATH')
     parser.add_argument('--mask_alpha', default=0.75, dest='mask_alpha', type=float, help='Mask alpha value')
+    parser.add_argument('--rescale', default=1., dest='rescale', type=float, help='Rescale ')
 
     parser.set_defaults(no_bar=False, display=False, resume=False, output_coco_json=False, output_web_json=False, shuffle=False,
                         benchmark=False, no_sort=False, no_hash=False, mask_proto_debug=False, crop=True, detect=False)
@@ -675,9 +676,21 @@ def evalvideo(net:Yolact, path:str):
     def get_next_frame(vid):
         return [vid.read()[1] for _ in range(args.video_multiframe)]
 
+    def rescale(frame):
+        if args.rescale < 1.0:
+            h, w = frame.shape[:2]
+            new_img = np.zeros((h, w, 3), np.uint8)
+            fr = cv2.resize(frame, dsize=(int(w * args.rescale), int(h * args.rescale)))
+            new_img[h - int(h * args.rescale):h, 0:int(w * args.rescale)] = fr
+            return new_img
+        else:
+            return frame
+
     def transform_frame(frames):
         with torch.no_grad():
-            frames = [torch.from_numpy(frame).cuda().float() for frame in frames]
+            frames = [
+                torch.from_numpy( rescale(frame) ).cuda().float()
+                for frame in frames]
             return frames, transform(torch.stack(frames, 0))
 
     def eval_network(inp):
