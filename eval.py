@@ -134,7 +134,7 @@ coco_cats = {} # Call prep_coco_cats to fill this
 coco_cats_inv = {}
 color_cache = defaultdict(lambda: {})
 
-def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, bg_imgs=None, slide_num=0):
+def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, bg_imgs=None, slide_num=0, bgvid=None):
     """
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
     """
@@ -215,9 +215,18 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                 masks_color_cumul = masks[1:]
                 masks_color_summand += masks_color_cumul.sum(dim=0)
 
-            img_gpu = img_gpu * masks_color_summand * mask_alpha + bg_imgs[slide_num] * masks_color_summand * (1-mask_alpha)
+            if Path(args.mask_bg_path).suffix == '.mp4':
+                bg_frame = bgvid.read()[1]
+                bg_frame = cv2.resize(bg_frame, (w, h))
+                bg_img_gpu = torch.from_numpy(
+                    bg_frame / 255.0
+                    ).cuda().float()
+            else:
+                bg_img_gpu = bg_imgs[slide_num]
+
+            img_gpu = img_gpu * masks_color_summand * mask_alpha + bg_img_gpu * masks_color_summand * (1-mask_alpha)
             # Composition with background
-            img_gpu = img_gpu + bg_imgs[slide_num] * (1 - masks_color_summand)
+            img_gpu = img_gpu + bg_img_gpu * (1 - masks_color_summand)
 
     # Then draw the stuff that needs to be done on the cpu
     # Note, make sure this is a uint8 tensor or opencv will not anti alias text for whatever reason
@@ -646,6 +655,7 @@ def evalvideo(net:Yolact, path:str):
     slide_num =0
     bg_imgs = []
     mask_alpha = args.mask_alpha
+    bgvid = None
 
     if args.mask_bg_path is not None:
         if Path(args.mask_bg_path).suffix == '.pdf':
@@ -658,6 +668,12 @@ def evalvideo(net:Yolact, path:str):
                     bg_img / 255.0
                     ).cuda().float()
                 bg_imgs.append(bg_img_gpu)
+        elif Path(args.mask_bg_path).suffix == '.mp4':
+            bg_imgs = []
+            bgvid = cv2.VideoCapture(args.mask_bg_path)
+            BG_W = bgvid.get(cv2.CAP_PROP_FRAME_WIDTH)
+            BG_H = bgvid.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            print('background capture video size: w{} h{}'.format(BG_W, BG_H))
         else:
             bg_img = cv2.resize(cv2.imread(args.mask_bg_path), (int(W), int(H)))
             bg_img_gpu = torch.from_numpy(
@@ -680,8 +696,8 @@ def evalvideo(net:Yolact, path:str):
         if args.rescale < 1.0:
             h, w = frame.shape[:2]
             new_img = np.zeros((h, w, 3), np.uint8)
-            fr = cv2.resize(frame, dsize=(int(w * args.rescale), int(h * args.rescale)))
-            new_img[h - int(h * args.rescale):h, 0:int(w * args.rescale)] = fr
+            rescale_frame = cv2.resize(frame, dsize=(int(w * args.rescale), int(h * args.rescale)))
+            new_img[h - int(h * args.rescale):h, 0:int(w * args.rescale)] = rescale_frame
             return new_img
         else:
             return frame
@@ -699,11 +715,11 @@ def evalvideo(net:Yolact, path:str):
             return frames, net(imgs)
 
     def prep_frame(inp):
-        nonlocal slide_num, bg_imgs, mask_alpha
+        nonlocal slide_num, bg_imgs, mask_alpha, bgvid
         with torch.no_grad():
             frame, preds = inp
             return prep_display(preds, frame, None, None, undo_transform=False, class_color=True, 
-                                mask_alpha=mask_alpha, bg_imgs=bg_imgs, slide_num=slide_num)
+                                mask_alpha=mask_alpha, bg_imgs=bg_imgs, slide_num=slide_num, bgvid=bgvid)
 
     frame_buffer = Queue()
     video_fps = 0
